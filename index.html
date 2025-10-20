@@ -4,20 +4,19 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Team Optimiser (OCEAN)</title>
-<!-- CSV parsing -->
 <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
 <style>
-  :root { --bg:#0b1020; --panel:#121932; --text:#e8ecff; --muted:#b7c1ff; --accent:#7cc6ff; --ok:#69db7c; --warn:#ffd43b; }
+  :root { --bg:#0b1020; --panel:#121932; --text:#e8ecff; --muted:#b7c1ff; --accent:#7cc6ff; }
   body { background:var(--bg); color:var(--text); font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif; margin:0; padding:2rem; }
   h1 { margin-top:0; font-size:1.6rem; }
-  .card { background:var(--panel); border-radius:16px; padding:1.25rem 1.25rem; max-width:1100px; margin:0 auto 1rem auto; box-shadow: 0 6px 20px rgba(0,0,0,.25); }
+  .card { background:var(--panel); border-radius:16px; padding:1.25rem; max-width:1100px; margin:0 auto 1rem; box-shadow:0 6px 20px rgba(0,0,0,.25); }
   .row { display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-end; }
   label { font-size:.9rem; color:var(--muted); display:block; margin-bottom:.25rem; }
   input[type="number"], input[type="text"] { padding:.6rem .7rem; border-radius:10px; border:1px solid #2a3568; background:#0e1530; color:var(--text); min-width:120px; }
   input[type="file"] { color:var(--text); }
   .btn { background:var(--accent); color:#0b1020; border:none; border-radius:12px; padding:.7rem 1rem; font-weight:600; cursor:pointer; }
   .btn:disabled { opacity:.5; cursor:not-allowed; }
-  .pill { display:inline-block; padding:.25rem .6rem; border-radius:999px; background:#1a254d; color:var(--muted); font-size:.8rem; }
+  .pill { display:inline-block; padding:.25rem .6rem; border-radius:999px; background:#1a254d; color:var(--muted); font-size:.8rem; margin-right:.5rem; }
   table { width:100%; border-collapse:collapse; color:var(--text); font-size:.92rem; }
   th, td { border-bottom:1px solid #233063; padding:.5rem .6rem; text-align:left; }
   th { color:var(--muted); font-weight:600; }
@@ -64,6 +63,9 @@
       <div>
         <button id="downloadBtn" class="btn" disabled>Download CSV</button>
       </div>
+      <div>
+        <button id="downloadSummaryBtn" class="btn" disabled>Download Team Summary</button>
+      </div>
     </div>
     <p class="note" style="margin-top:.6rem">
       Detected columns: <span id="detected" class="pill">—</span>
@@ -91,9 +93,7 @@ function normHeader(h) { return String(h || "").trim().toLowerCase(); }
 
 function findCol(columns, wantedList) {
   const map = new Map(columns.map(c => [normHeader(c), c]));
-  for (const w of wantedList) {
-    if (map.has(w)) return map.get(w);
-  }
+  for (const w of wantedList) { if (map.has(w)) return map.get(w); }
   return null;
 }
 
@@ -184,7 +184,6 @@ function initialAssignment(n, sizes, C, seed=42) {
 /* Simulated annealing swap search */
 function optimise(teams, C, N, wC, wN, maxIters=20000, seed=123) {
   function rng(seed) {
-    // xorshift32
     let x = seed >>> 0;
     return () => (x ^= x<<13, x ^= x>>>17, x ^= x<<5, (x>>>0) / 4294967296);
   }
@@ -196,7 +195,6 @@ function optimise(teams, C, N, wC, wN, maxIters=20000, seed=123) {
   const T0 = 0.1;
 
   for (let it=0; it<maxIters; it++) {
-    // pick two teams and a member from each
     let i = Math.floor(rand()*best.length);
     let j = Math.floor(rand()*best.length);
     if (i===j || best[i].length===0 || best[j].length===0) continue;
@@ -224,11 +222,11 @@ function optimise(teams, C, N, wC, wN, maxIters=20000, seed=123) {
 function renderTable(assignments, rows, nameCol, traits) {
   const cols = ["Team","Name","O","C","E","A","N"];
   let html = "<table><thead><tr>" + cols.map(c=>`<th>${c}</th>`).join("") + "</tr></thead><tbody>";
-  for (const team of assignments) {
+  assignments.forEach((team, teamIdx) => {
     const members = team.map(i => rows[i]);
     for (const r of members) {
       html += `<tr>
-        <td>${"Team " + (assignments.indexOf(team)+1)}</td>
+        <td>${"Team " + (teamIdx+1)}</td>
         <td>${String(r[nameCol])}</td>
         <td>${Number(r[traits.O])}</td>
         <td>${Number(r[traits.C])}</td>
@@ -244,7 +242,7 @@ function renderTable(assignments, rows, nameCol, traits) {
     const A = members.map(r=>Number(r[traits.A]));
     const N = members.map(r=>Number(r[traits.N]));
     html += `<tr class="summary">
-      <td>${"Team " + (assignments.indexOf(team)+1)} (summary)</td>
+      <td>${"Team " + (teamIdx+1)} (summary)</td>
       <td></td>
       <td>${mean(O).toFixed(2)}</td>
       <td>${mean(C).toFixed(2)}</td>
@@ -252,9 +250,16 @@ function renderTable(assignments, rows, nameCol, traits) {
       <td>${mean(A).toFixed(2)}</td>
       <td>${sdSample(N).toFixed(2)}</td>
     </tr>`;
-  }
+  });
   html += "</tbody></table>";
   return html;
+}
+
+function toCSV(rows) {
+  return rows.map(row => row.map(v => {
+    const s = String(v ?? "");
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+  }).join(",")).join("\n");
 }
 
 function downloadCSV(assignments, rows, nameCol, traits) {
@@ -272,26 +277,33 @@ function downloadCSV(assignments, rows, nameCol, traits) {
     const N = members.map(r=>Number(r[traits.N]));
     out.push([`Team ${tIdx+1} (summary)`, "", mean(O).toFixed(3), mean(C).toFixed(3), mean(E).toFixed(3), mean(A).toFixed(3), sdSample(N).toFixed(3)]);
   });
+  const blob = new Blob([toCSV(out)], {type:"text/csv;charset=utf-8;"});
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "teams.csv";
+  document.body.appendChild(a); a.click(); URL.revokeObjectURL(a.href); a.remove();
+}
 
-  const csv = out.map(row => row.map(v => {
-    const s = String(v ?? "");
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
-  }).join(",")).join("\n");
-
-  const blob = new Blob([csv], {type:"text/csv;charset=utf-8;"});
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "teams.csv";
-  document.body.appendChild(a);
-  a.click();
-  URL.revokeObjectURL(a.href);
-  a.remove();
+function downloadSummaryCSV(assignments, rows, traits) {
+  const header = ["Team","mean_O","mean_C","mean_E","mean_A","sd_N"];
+  const out = [header];
+  assignments.forEach((team, tIdx) => {
+    const members = team.map(i => rows[i]);
+    const O = members.map(r=>Number(r[traits.O]));
+    const C = members.map(r=>Number(r[traits.C]));
+    const E = members.map(r=>Number(r[traits.E]));
+    const A = members.map(r=>Number(r[traits.A]));
+    const N = members.map(r=>Number(r[traits.N]));
+    out.push([`Team ${tIdx+1}`, mean(O).toFixed(3), mean(C).toFixed(3), mean(E).toFixed(3), mean(A).toFixed(3), sdSample(N).toFixed(3)]);
+  });
+  const blob = new Blob([toCSV(out)], {type:"text/csv;charset=utf-8;"});
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "teams_summary.csv";
+  document.body.appendChild(a); a.click(); URL.revokeObjectURL(a.href); a.remove();
 }
 
 /* ---------- Wiring ---------- */
 const csvInput = document.getElementById("csvFile");
 const runBtn = document.getElementById("runBtn");
 const downloadBtn = document.getElementById("downloadBtn");
+const downloadSummaryBtn = document.getElementById("downloadSummaryBtn");
 const detected = document.getElementById("detected");
 const resultCard = document.getElementById("resultCard");
 const summaryDiv = document.getElementById("summary");
@@ -306,16 +318,11 @@ csvInput.addEventListener("change", () => {
     header: true,
     skipEmptyLines: "greedy",
     complete: (res) => {
-      parsedRows = res.data.filter(r => Object.values(r).some(v => String(v).trim()!==""));
+      parsedRows = res.data.filter(r => Object.values(r).some(v => String(v ?? "").trim()!==""));
       const headers = res.meta.fields || Object.keys(parsedRows[0] || {});
       const det = detectColumns(headers);
-      if (!det.ok) {
-        detected.textContent = det.error;
-        runBtn.disabled = true;
-        return;
-      }
-      nameCol = det.nameCol;
-      traitCols = det.traitCols;
+      if (!det.ok) { detected.textContent = det.error; runBtn.disabled = true; return; }
+      nameCol = det.nameCol; traitCols = det.traitCols;
       detected.textContent = `Name: "${nameCol}" | Traits: O="${traitCols.O}", C="${traitCols.C}", E="${traitCols.E}", A="${traitCols.A}", N="${traitCols.N}"`;
       runBtn.disabled = false;
     },
@@ -330,7 +337,6 @@ runBtn.addEventListener("click", () => {
   const iters = parseInt(document.getElementById("iters").value || "20000", 10);
   const seed = parseInt(document.getElementById("seed").value || "123", 10);
 
-  // Filter to rows with valid numeric C and N (needed for objective)
   const rows = parsedRows.filter(r =>
     r[traitCols.C] !== undefined && r[traitCols.N] !== undefined &&
     r[traitCols.C] !== "" && r[traitCols.N] !== "" &&
@@ -346,31 +352,33 @@ runBtn.addEventListener("click", () => {
   const teams0 = initialAssignment(n, sizes, C, seed);
   assignments = optimise(teams0, C, N, wC, wN, iters, seed);
 
-  // Summaries
   const teamMeansC = assignments.map(t => mean(t.map(i => C[i])));
   const stdTeamMeanC = sd(teamMeansC);
   const avgTeamSdN = mean(assignments.map(t => sdSample(t.map(i => N[i]))));
 
   summaryDiv.innerHTML = `
-    <div class="pill">Teams: ${assignments.map(t=>t.length).join(", ")}</div>
-    <div class="pill">Std of team-mean C: ${stdTeamMeanC.toFixed(3)}</div>
-    <div class="pill">Avg within-team SD of N: ${avgTeamSdN.toFixed(3)}</div>
+    <span class="pill">Teams: ${assignments.map(t=>t.length).join(", ")}</span>
+    <span class="pill">Std of team-mean C: ${stdTeamMeanC.toFixed(3)}</span>
+    <span class="pill">Avg within-team SD of N: ${avgTeamSdN.toFixed(3)}</span>
   `;
+
+  // Keep for downloads
+  window._rows = rows; window._nameCol = nameCol; window._traitCols = traitCols; window._assignments = assignments;
 
   tableWrap.innerHTML = renderTable(assignments, rows, nameCol, traitCols);
   resultCard.style.display = "block";
   downloadBtn.disabled = false;
-
-  // Keep these for download
-  window._rows = rows;
-  window._nameCol = nameCol;
-  window._traitCols = traitCols;
-  window._assignments = assignments;
+  downloadSummaryBtn.disabled = false;
 });
 
 downloadBtn.addEventListener("click", () => {
   if (!window._assignments) return;
   downloadCSV(window._assignments, window._rows, window._nameCol, window._traitCols);
+});
+
+downloadSummaryBtn.addEventListener("click", () => {
+  if (!window._assignments) return;
+  downloadSummaryCSV(window._assignments, window._rows, window._traitCols);
 });
 </script>
 </body>
