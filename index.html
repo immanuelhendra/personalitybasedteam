@@ -114,7 +114,7 @@ function feasibleTeamCounts(n) {
   const tMin = Math.ceil(n/6);
   const tMax = Math.floor(n/5);
   for (let t=tMin; t<=tMax; t++) {
-    const k = n - 5*t; // number of 6-person teams
+    const k = n - 5*t;
     if (0 <= k && k <= t) out.push([t,k]);
   }
   return out;
@@ -183,10 +183,7 @@ function initialAssignment(n, sizes, C, seed=42) {
 
 /* Simulated annealing swap search */
 function optimise(teams, C, N, wC, wN, maxIters=20000, seed=123) {
-  function rng(seed) {
-    let x = seed >>> 0;
-    return () => (x ^= x<<13, x ^= x>>>17, x ^= x<<5, (x>>>0) / 4294967296);
-  }
+  function rng(seed) { let x = seed >>> 0; return () => (x ^= x<<13, x ^= x>>>17, x ^= x<<5, (x>>>0) / 4294967296); }
   const rand = rng(seed);
   const clone = t => t.map(a=>a.slice());
 
@@ -235,20 +232,21 @@ function renderTable(assignments, rows, nameCol, traits) {
         <td>${Number(r[traits.N])}</td>
       </tr>`;
     }
-    // summary row: mean OCEA, SD(N)
+    // summary row: show mean ± sd for each trait
     const O = members.map(r=>Number(r[traits.O]));
     const C = members.map(r=>Number(r[traits.C]));
     const E = members.map(r=>Number(r[traits.E]));
     const A = members.map(r=>Number(r[traits.A]));
     const N = members.map(r=>Number(r[traits.N]));
+    const fmt = (m,s)=>`${m.toFixed(2)} ± ${s.toFixed(2)}`;
     html += `<tr class="summary">
       <td>${"Team " + (teamIdx+1)} (summary)</td>
       <td></td>
-      <td>${mean(O).toFixed(2)}</td>
-      <td>${mean(C).toFixed(2)}</td>
-      <td>${mean(E).toFixed(2)}</td>
-      <td>${mean(A).toFixed(2)}</td>
-      <td>${sdSample(N).toFixed(2)}</td>
+      <td>${fmt(mean(O), sdSample(O))}</td>
+      <td>${fmt(mean(C), sdSample(C))}</td>
+      <td>${fmt(mean(E), sdSample(E))}</td>
+      <td>${fmt(mean(A), sdSample(A))}</td>
+      <td>${fmt(mean(N), sdSample(N))}</td>
     </tr>`;
   });
   html += "</tbody></table>";
@@ -270,12 +268,19 @@ function downloadCSV(assignments, rows, nameCol, traits) {
     for (const r of members) {
       out.push([`Team ${tIdx+1}`, String(r[nameCol]), r[traits.O], r[traits.C], r[traits.E], r[traits.A], r[traits.N]]);
     }
+    // keep this file as before (members + one summary row)
     const O = members.map(r=>Number(r[traits.O]));
     const C = members.map(r=>Number(r[traits.C]));
     const E = members.map(r=>Number(r[traits.E]));
     const A = members.map(r=>Number(r[traits.A]));
     const N = members.map(r=>Number(r[traits.N]));
-    out.push([`Team ${tIdx+1} (summary)`, "", mean(O).toFixed(3), mean(C).toFixed(3), mean(E).toFixed(3), mean(A).toFixed(3), sdSample(N).toFixed(3)]);
+    out.push([`Team ${tIdx+1} (summary)`, "",
+      `${mean(O).toFixed(3)} ± ${sdSample(O).toFixed(3)}`,
+      `${mean(C).toFixed(3)} ± ${sdSample(C).toFixed(3)}`,
+      `${mean(E).toFixed(3)} ± ${sdSample(E).toFixed(3)}`,
+      `${mean(A).toFixed(3)} ± ${sdSample(A).toFixed(3)}`,
+      `${mean(N).toFixed(3)} ± ${sdSample(N).toFixed(3)}`
+    ]);
   });
   const blob = new Blob([toCSV(out)], {type:"text/csv;charset=utf-8;"});
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "teams.csv";
@@ -283,7 +288,8 @@ function downloadCSV(assignments, rows, nameCol, traits) {
 }
 
 function downloadSummaryCSV(assignments, rows, traits) {
-  const header = ["Team","mean_O","mean_C","mean_E","mean_A","sd_N"];
+  // NEW: include mean and sd for each trait
+  const header = ["Team","mean_O","sd_O","mean_C","sd_C","mean_E","sd_E","mean_A","sd_A","mean_N","sd_N"];
   const out = [header];
   assignments.forEach((team, tIdx) => {
     const members = team.map(i => rows[i]);
@@ -292,7 +298,14 @@ function downloadSummaryCSV(assignments, rows, traits) {
     const E = members.map(r=>Number(r[traits.E]));
     const A = members.map(r=>Number(r[traits.A]));
     const N = members.map(r=>Number(r[traits.N]));
-    out.push([`Team ${tIdx+1}`, mean(O).toFixed(3), mean(C).toFixed(3), mean(E).toFixed(3), mean(A).toFixed(3), sdSample(N).toFixed(3)]);
+    out.push([
+      `Team ${tIdx+1}`,
+      mean(O).toFixed(3), sdSample(O).toFixed(3),
+      mean(C).toFixed(3), sdSample(C).toFixed(3),
+      mean(E).toFixed(3), sdSample(E).toFixed(3),
+      mean(A).toFixed(3), sdSample(A).toFixed(3),
+      mean(N).toFixed(3), sdSample(N).toFixed(3)
+    ]);
   });
   const blob = new Blob([toCSV(out)], {type:"text/csv;charset=utf-8;"});
   const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "teams_summary.csv";
@@ -329,6 +342,8 @@ csvInput.addEventListener("change", () => {
     error: (err) => { detected.textContent = "Parse error: " + err.message; runBtn.disabled = true; }
   });
 });
+
+function meanArrIdx(team, arr){ return mean(team.map(i=>arr[i])); }
 
 runBtn.addEventListener("click", () => {
   if (!parsedRows) return;
