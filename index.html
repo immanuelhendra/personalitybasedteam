@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Team Optimiser (OCEAN)</title>
 <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
   :root { --bg:#0b1020; --panel:#121932; --text:#e8ecff; --muted:#b7c1ff; --accent:#7cc6ff; }
   body { background:var(--bg); color:var(--text); font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif; margin:0; padding:2rem; }
@@ -23,17 +24,17 @@
   .summary { color:var(--muted); }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   .note { color:var(--muted); font-size:.9rem; }
+  canvas { max-width:100%; }
 </style>
 </head>
 <body>
   <div class="card">
     <h1>Team Optimiser (OCEAN)</h1>
     <p class="note">
-      Upload a CSV with a name column and Big Five columns (<span class="mono">O, C, E, A, N</span>) or common aliases
+      Upload a CSV with a name column and Big Five columns (<span class="mono">O, C, E, A, N</span>) or aliases
       (e.g. <span class="mono">Openness</span>, <span class="mono">Conscientiousness</span>, <span class="mono">Neuroticism</span>).
-      Teams are restricted to <strong>5–6</strong> members. The optimiser:
-      <br/>• balances <strong>team-average C</strong> across teams,
-      <br/>• minimises <strong>within-team SD of N</strong>.
+      Teams are restricted to <strong>5–6</strong> members. Optimiser:
+      <br/>• balances <strong>team-average C</strong>, • minimises <strong>within-team SD of N</strong>.
     </p>
 
     <div class="row" style="margin-top:.75rem">
@@ -42,11 +43,11 @@
         <input id="csvFile" type="file" accept=".csv" />
       </div>
       <div>
-        <label>Weight for C balancing (<span class="mono">--weight_c</span>)</label>
+        <label>Weight C</label>
         <input id="wC" type="number" step="0.1" value="1.0" />
       </div>
       <div>
-        <label>Weight for N tightness (<span class="mono">--weight_n</span>)</label>
+        <label>Weight N</label>
         <input id="wN" type="number" step="0.1" value="1.0" />
       </div>
       <div>
@@ -57,15 +58,9 @@
         <label>Seed</label>
         <input id="seed" type="number" value="123" />
       </div>
-      <div>
-        <button id="runBtn" class="btn" disabled>Run optimiser</button>
-      </div>
-      <div>
-        <button id="downloadBtn" class="btn" disabled>Download CSV</button>
-      </div>
-      <div>
-        <button id="downloadSummaryBtn" class="btn" disabled>Download Team Summary</button>
-      </div>
+      <div><button id="runBtn" class="btn" disabled>Run optimiser</button></div>
+      <div><button id="downloadBtn" class="btn" disabled>Download CSV</button></div>
+      <div><button id="downloadSummaryBtn" class="btn" disabled>Download Team Summary</button></div>
     </div>
     <p class="note" style="margin-top:.6rem">
       Detected columns: <span id="detected" class="pill">—</span>
@@ -76,6 +71,11 @@
     <h2 style="margin-top:0">Results</h2>
     <div id="summary" class="summary"></div>
     <div id="tableWrap" style="overflow:auto; margin-top:1rem"></div>
+  </div>
+
+  <div id="chartCard" class="card" style="display:none">
+    <h2 style="margin-top:0">Distribution of team-average Big Five (10-point bins)</h2>
+    <canvas id="binsChart" height="140"></canvas>
   </div>
 
 <script>
@@ -90,13 +90,11 @@ const TRAIT_ALIASES = {
 };
 
 function normHeader(h) { return String(h || "").trim().toLowerCase(); }
-
 function findCol(columns, wantedList) {
   const map = new Map(columns.map(c => [normHeader(c), c]));
-  for (const w of wantedList) { if (map.has(w)) return map.get(w); }
+  for (const w of wantedList) if (map.has(w)) return map.get(w);
   return null;
 }
-
 function detectColumns(headers) {
   const nameCol = findCol(headers, NAME_ALIASES);
   const traitCols = {};
@@ -109,121 +107,64 @@ function detectColumns(headers) {
   return { ok:true, nameCol: nameCol ?? headers[0], traitCols };
 }
 
-function feasibleTeamCounts(n) {
-  const out = [];
-  const tMin = Math.ceil(n/6);
-  const tMax = Math.floor(n/5);
-  for (let t=tMin; t<=tMax; t++) {
-    const k = n - 5*t;
-    if (0 <= k && k <= t) out.push([t,k]);
-  }
-  return out;
+function feasibleTeamCounts(n){const o=[];const a=Math.ceil(n/6),b=Math.floor(n/5);for(let t=a;t<=b;t++){const k=n-5*t;if(0<=k&&k<=t)o.push([t,k])}return o}
+function targetTeamSizes(n){
+  const feas=feasibleTeamCounts(n);
+  if(!feas.length){const s=Math.floor(n/6),r=n-6*s;const z=Array(s).fill(6);if(r>0)z.push(r);return z}
+  let best=feas[0],gap=Infinity;for(const [t,k] of feas){const g=Math.abs(k-t/2);if(g<gap){gap=g;best=[t,k]}}
+  const [t,k]=best;return [...Array(k).fill(6),...Array(t-k).fill(5)];
 }
 
-function targetTeamSizes(n) {
-  const feas = feasibleTeamCounts(n);
-  if (feas.length === 0) {
-    const sixes = Math.floor(n/6);
-    const rem = n - sixes*6;
-    const sizes = Array(sixes).fill(6);
-    if (rem>0) sizes.push(rem);
-    return sizes;
-  }
-  let best = feas[0], bestGap = Infinity;
-  for (const [t,k] of feas) {
-    const gap = Math.abs(k - t/2);
-    if (gap < bestGap) { best = [t,k]; bestGap = gap; }
-  }
-  const [t,k] = best;
-  return [...Array(k).fill(6), ...Array(t-k).fill(5)];
+function mean(a){return a.length?a.reduce((x,y)=>x+y,0)/a.length:0}
+function variance(a){const m=mean(a);return a.length?a.reduce((s,x)=>s+(x-m)*(x-m),0)/a.length:0}
+function sd(a){return Math.sqrt(variance(a))}
+function sdSample(a){if(a.length<=1)return 0;const m=mean(a);return Math.sqrt(a.reduce((s,x)=>s+(x-m)*(x-m),0)/(a.length-1))}
+
+/* Objective: J = wC * Var(teamMean(C))/Var(C) + wN * mean(teamSD(N))/SD(N) */
+function evaluateObjective(teams, C, N, wC, wN){
+  const teamMeansC=teams.filter(t=>t.length).map(t=>mean(t.map(i=>C[i])));
+  const varTeamMeanC=variance(teamMeansC), overallVarC=variance(C)||1;
+  const teamSdN=teams.filter(t=>t.length).map(t=>t.length>1?sdSample(t.map(i=>N[i])):0);
+  const avgTeamSdN=teamSdN.length?mean(teamSdN):0, overallSdN=sd(N)||1;
+  return wC*(varTeamMeanC/overallVarC)+wN*(avgTeamSdN/overallSdN);
 }
 
-function mean(arr){ return arr.length? arr.reduce((a,b)=>a+b,0)/arr.length : 0; }
-function variance(arr){ const m=mean(arr); return arr.length? arr.reduce((s,x)=>s+(x-m)*(x-m),0)/arr.length : 0; }
-function sd(arr){ const v=variance(arr); return Math.sqrt(v); }
-function sdSample(arr){ if (arr.length<=1) return 0; const m=mean(arr); return Math.sqrt(arr.reduce((s,x)=>s+(x-m)*(x-m),0)/(arr.length-1)); }
-
-/* Objective:
-   J = w_c * Var(team_mean(C))/Var(C) + w_n * mean(team_sd(N))/SD(N)
-*/
-function evaluateObjective(teams, C, N, wC, wN) {
-  const teamMeansC = teams.filter(t=>t.length>0).map(t => mean(t.map(i => C[i])));
-  const varTeamMeanC = variance(teamMeansC);
-  const overallVarC = variance(C) || 1;
-
-  const teamSdN = teams.filter(t=>t.length>0).map(t => (t.length>1 ? sdSample(t.map(i => N[i])) : 0));
-  const avgTeamSdN = teamSdN.length? mean(teamSdN) : 0;
-  const overallSdN = sd(N) || 1;
-
-  return wC * (varTeamMeanC/overallVarC) + wN * (avgTeamSdN/overallSdN);
-}
-
-/* Seed by snake-fill on sorted C */
-function initialAssignment(n, sizes, C, seed=42) {
-  const idx = Array.from({length:n}, (_,i)=>i).sort((a,b)=>C[a]-C[b]);
-  const teams = sizes.map(()=>[]);
-  let t = 0, dir = 1;
-  for (const s of idx) {
-    teams[t].push(s);
-    if (teams[t].length >= sizes[t]) {
-      if (dir===1){ t++; if (t>=teams.length){ t=teams.length-1; dir=-1; } }
-      else { t--; if (t<0){ t=0; dir=1; } }
-    }
-  }
-  // Fill any leftovers (just in case)
-  const used = new Set(teams.flat());
-  const left = idx.filter(i=>!used.has(i));
-  for (const s of left) {
-    const gaps = teams.map((tm, i) => ({i, gap: sizes[i]-tm.length}));
-    gaps.sort((a,b)=>b.gap - a.gap);
-    teams[gaps[0].i].push(s);
-  }
+/* seed by snake-fill on sorted C */
+function initialAssignment(n, sizes, C, seed=42){
+  const idx=Array.from({length:n},(_,i)=>i).sort((a,b)=>C[a]-C[b]);
+  const teams=sizes.map(()=>[]); let t=0,dir=1;
+  for(const s of idx){teams[t].push(s); if(teams[t].length>=sizes[t]){ if(dir===1){t++; if(t>=teams.length){t=teams.length-1; dir=-1}} else {t--; if(t<0){t=0; dir=1}}}}
+  const used=new Set(teams.flat()); const leftover=idx.filter(i=>!used.has(i));
+  for(const s of leftover){const gaps=teams.map((tm,i)=>({i,g:sizes[i]-tm.length})).sort((a,b)=>b.g-a.g); teams[gaps[0].i].push(s)}
   return teams;
 }
 
-/* Simulated annealing swap search */
-function optimise(teams, C, N, wC, wN, maxIters=20000, seed=123) {
-  function rng(seed) { let x = seed >>> 0; return () => (x ^= x<<13, x ^= x>>>17, x ^= x<<5, (x>>>0) / 4294967296); }
-  const rand = rng(seed);
-  const clone = t => t.map(a=>a.slice());
-
-  let best = clone(teams);
-  let bestScore = evaluateObjective(best, C, N, wC, wN);
-  const T0 = 0.1;
-
-  for (let it=0; it<maxIters; it++) {
-    let i = Math.floor(rand()*best.length);
-    let j = Math.floor(rand()*best.length);
-    if (i===j || best[i].length===0 || best[j].length===0) continue;
-    const a = Math.floor(rand()*best[i].length);
-    const b = Math.floor(rand()*best[j].length);
-
-    const cand = clone(best);
-    const tmp = cand[i][a];
-    cand[i][a] = cand[j][b];
-    cand[j][b] = tmp;
-
-    const s = evaluateObjective(cand, C, N, wC, wN);
-    if (s < bestScore) {
-      best = cand; bestScore = s;
-    } else {
-      const T = T0 * Math.max(0.01, 1 - it/maxIters);
-      const prob = Math.exp(-(s - bestScore)/Math.max(1e-9, T));
-      if (rand() < prob) { best = cand; bestScore = s; }
-    }
+/* simulated annealing swap search */
+function optimise(teams, C, N, wC, wN, maxIters=20000, seed=123){
+  function rng(seed){let x=seed>>>0; return ()=> (x^=x<<13,x^=x>>>17,x^=x<<5,(x>>>0)/4294967296)}
+  const rand=rng(seed), clone=t=>t.map(a=>a.slice());
+  let best=clone(teams), bestScore=evaluateObjective(best,C,N,wC,wN); const T0=0.1;
+  for(let it=0;it<maxIters;it++){
+    let i=Math.floor(rand()*best.length), j=Math.floor(rand()*best.length);
+    if(i===j||!best[i].length||!best[j].length) continue;
+    const a=Math.floor(rand()*best[i].length), b=Math.floor(rand()*best[j].length);
+    const cand=clone(best); const tmp=cand[i][a]; cand[i][a]=cand[j][b]; cand[j][b]=tmp;
+    const s=evaluateObjective(cand,C,N,wC,wN);
+    if(s<bestScore){best=cand; bestScore=s}
+    else{const T=T0*Math.max(0.01,1-it/maxIters); const p=Math.exp(-(s-bestScore)/Math.max(1e-9,T)); if(rand()<p){best=cand; bestScore=s}}
   }
   return best;
 }
 
-/* Renderers */
-function renderTable(assignments, rows, nameCol, traits) {
-  const cols = ["Team","Name","O","C","E","A","N"];
-  let html = "<table><thead><tr>" + cols.map(c=>`<th>${c}</th>`).join("") + "</tr></thead><tbody>";
-  assignments.forEach((team, teamIdx) => {
-    const members = team.map(i => rows[i]);
-    for (const r of members) {
+/* Table render + downloads */
+function renderTable(assignments, rows, nameCol, traits){
+  const cols=["Team","Name","O","C","E","A","N"];
+  let html="<table><thead><tr>"+cols.map(c=>`<th>${c}</th>`).join("")+"</tr></thead><tbody>";
+  assignments.forEach((team,idx)=>{
+    const members=team.map(i=>rows[i]);
+    for(const r of members){
       html += `<tr>
-        <td>${"Team " + (teamIdx+1)}</td>
+        <td>${"Team "+(idx+1)}</td>
         <td>${String(r[nameCol])}</td>
         <td>${Number(r[traits.O])}</td>
         <td>${Number(r[traits.C])}</td>
@@ -232,49 +173,38 @@ function renderTable(assignments, rows, nameCol, traits) {
         <td>${Number(r[traits.N])}</td>
       </tr>`;
     }
-    // summary row: show mean ± sd for each trait
-    const O = members.map(r=>Number(r[traits.O]));
-    const C = members.map(r=>Number(r[traits.C]));
-    const E = members.map(r=>Number(r[traits.E]));
-    const A = members.map(r=>Number(r[traits.A]));
-    const N = members.map(r=>Number(r[traits.N]));
-    const fmt = (m,s)=>`${m.toFixed(2)} ± ${s.toFixed(2)}`;
+    const O=members.map(r=>+r[traits.O]), C=members.map(r=>+r[traits.C]),
+          E=members.map(r=>+r[traits.E]), A=members.map(r=>+r[traits.A]),
+          N=members.map(r=>+r[traits.N]);
+    const fmt=(m,s)=>`${m.toFixed(2)} ± ${s.toFixed(2)}`;
     html += `<tr class="summary">
-      <td>${"Team " + (teamIdx+1)} (summary)</td>
-      <td></td>
-      <td>${fmt(mean(O), sdSample(O))}</td>
-      <td>${fmt(mean(C), sdSample(C))}</td>
-      <td>${fmt(mean(E), sdSample(E))}</td>
-      <td>${fmt(mean(A), sdSample(A))}</td>
-      <td>${fmt(mean(N), sdSample(N))}</td>
+      <td>${"Team "+(idx+1)} (summary)</td><td></td>
+      <td>${fmt(mean(O),sdSample(O))}</td>
+      <td>${fmt(mean(C),sdSample(C))}</td>
+      <td>${fmt(mean(E),sdSample(E))}</td>
+      <td>${fmt(mean(A),sdSample(A))}</td>
+      <td>${fmt(mean(N),sdSample(N))}</td>
     </tr>`;
   });
   html += "</tbody></table>";
   return html;
 }
 
-function toCSV(rows) {
-  return rows.map(row => row.map(v => {
-    const s = String(v ?? "");
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+function toCSV(rows){
+  return rows.map(row=>row.map(v=>{
+    const s=String(v??""); return /[",\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s;
   }).join(",")).join("\n");
 }
 
-function downloadCSV(assignments, rows, nameCol, traits) {
-  const header = ["Team","Name","O","C","E","A","N"];
-  const out = [header];
-  assignments.forEach((team, tIdx) => {
-    const members = team.map(i => rows[i]);
-    for (const r of members) {
-      out.push([`Team ${tIdx+1}`, String(r[nameCol]), r[traits.O], r[traits.C], r[traits.E], r[traits.A], r[traits.N]]);
-    }
-    // keep this file as before (members + one summary row)
-    const O = members.map(r=>Number(r[traits.O]));
-    const C = members.map(r=>Number(r[traits.C]));
-    const E = members.map(r=>Number(r[traits.E]));
-    const A = members.map(r=>Number(r[traits.A]));
-    const N = members.map(r=>Number(r[traits.N]));
-    out.push([`Team ${tIdx+1} (summary)`, "",
+function downloadCSV(assignments, rows, nameCol, traits){
+  const header=["Team","Name","O","C","E","A","N"]; const out=[header];
+  assignments.forEach((team,tIdx)=>{
+    const members=team.map(i=>rows[i]);
+    for(const r of members) out.push([`Team ${tIdx+1}`, String(r[nameCol]), r[traits.O], r[traits.C], r[traits.E], r[traits.A], r[traits.N]]);
+    const O=members.map(r=>+r[traits.O]), C=members.map(r=>+r[traits.C]),
+          E=members.map(r=>+r[traits.E]), A=members.map(r=>+r[traits.A]),
+          N=members.map(r=>+r[traits.N]);
+    out.push([`Team ${tIdx+1} (summary)`,"",
       `${mean(O).toFixed(3)} ± ${sdSample(O).toFixed(3)}`,
       `${mean(C).toFixed(3)} ± ${sdSample(C).toFixed(3)}`,
       `${mean(E).toFixed(3)} ± ${sdSample(E).toFixed(3)}`,
@@ -282,117 +212,173 @@ function downloadCSV(assignments, rows, nameCol, traits) {
       `${mean(N).toFixed(3)} ± ${sdSample(N).toFixed(3)}`
     ]);
   });
-  const blob = new Blob([toCSV(out)], {type:"text/csv;charset=utf-8;"});
-  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "teams.csv";
-  document.body.appendChild(a); a.click(); URL.revokeObjectURL(a.href); a.remove();
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([toCSV(out)],{type:"text/csv;charset=utf-8;"}));
+  a.download="teams.csv"; document.body.appendChild(a); a.click(); URL.revokeObjectURL(a.href); a.remove();
 }
 
-function downloadSummaryCSV(assignments, rows, traits) {
-  // NEW: include mean and sd for each trait
-  const header = ["Team","mean_O","sd_O","mean_C","sd_C","mean_E","sd_E","mean_A","sd_A","mean_N","sd_N"];
-  const out = [header];
-  assignments.forEach((team, tIdx) => {
-    const members = team.map(i => rows[i]);
-    const O = members.map(r=>Number(r[traits.O]));
-    const C = members.map(r=>Number(r[traits.C]));
-    const E = members.map(r=>Number(r[traits.E]));
-    const A = members.map(r=>Number(r[traits.A]));
-    const N = members.map(r=>Number(r[traits.N]));
-    out.push([
-      `Team ${tIdx+1}`,
-      mean(O).toFixed(3), sdSample(O).toFixed(3),
-      mean(C).toFixed(3), sdSample(C).toFixed(3),
-      mean(E).toFixed(3), sdSample(E).toFixed(3),
-      mean(A).toFixed(3), sdSample(A).toFixed(3),
-      mean(N).toFixed(3), sdSample(N).toFixed(3)
+function downloadSummaryCSV(assignments, rows, traits){
+  const header=["Team","mean_O","sd_O","mean_C","sd_C","mean_E","sd_E","mean_A","sd_A","mean_N","sd_N"]; const out=[header];
+  assignments.forEach((team,tIdx)=>{
+    const members=team.map(i=>rows[i]);
+    const O=members.map(r=>+r[traits.O]), C=members.map(r=>+r[traits.C]),
+          E=members.map(r=>+r[traits.E]), A=members.map(r=>+r[traits.A]),
+          N=members.map(r=>+r[traits.N]);
+    out.push([`Team ${tIdx+1}`,
+      mean(O).toFixed(3),sdSample(O).toFixed(3),
+      mean(C).toFixed(3),sdSample(C).toFixed(3),
+      mean(E).toFixed(3),sdSample(E).toFixed(3),
+      mean(A).toFixed(3),sdSample(A).toFixed(3),
+      mean(N).toFixed(3),sdSample(N).toFixed(3)
     ]);
   });
-  const blob = new Blob([toCSV(out)], {type:"text/csv;charset=utf-8;"});
-  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "teams_summary.csv";
-  document.body.appendChild(a); a.click(); URL.revokeObjectURL(a.href); a.remove();
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([toCSV(out)],{type:"text/csv;charset=utf-8;"}));
+  a.download="teams_summary.csv"; document.body.appendChild(a); a.click(); URL.revokeObjectURL(a.href); a.remove();
+}
+
+/* ---------- Binning + chart ---------- */
+const BIN_EDGES = [...Array(11)].map((_,i)=>i*10); // 0,10,...,100 (upper bound handled as <upper, with +epsilon)
+const BIN_LABELS = BIN_EDGES.slice(0,-1).map((b,i)=> `${b}–${BIN_EDGES[i+1]-1 === 99 ? 100 : BIN_EDGES[i+1]-1}`);
+
+function binCounts(values){
+  const counts = new Array(10).fill(0);
+  const eps = 1e-9;
+  for(const v of values){
+    if (v == null || isNaN(v)) continue;
+    // bins: 0<=x<10, 10<=x<20, ..., 90<=x<=100
+    let idx = Math.floor(v/10);
+    if (idx < 0) idx = 0;
+    if (idx > 9) idx = 9; // include 100 into last bin
+    // apply <upper except last which includes 100 by capping index above
+    counts[idx] += 1;
+  }
+  return counts;
+}
+
+let chart = null;
+function renderBinsChart(assignments, rows, traits){
+  // collect team-average means
+  const teamMeans = { O:[], C:[], E:[], A:[], N:[] };
+  assignments.forEach(team=>{
+    const members = team.map(i=>rows[i]);
+    const O=members.map(r=>+r[traits.O]), C=members.map(r=>+r[traits.C]),
+          E=members.map(r=>+r[traits.E]), A=members.map(r=>+r[traits.A]),
+          N=members.map(r=>+r[traits.N]);
+    teamMeans.O.push(mean(O)); teamMeans.C.push(mean(C)); teamMeans.E.push(mean(E)); teamMeans.A.push(mean(A)); teamMeans.N.push(mean(N));
+  });
+
+  const dataSets = [
+    { key:'O', label:'Openness',          borderColor:'#4ea3ff', pointBackgroundColor:'#4ea3ff' },
+    { key:'C', label:'Conscientiousness', borderColor:'#ff9a3e', pointBackgroundColor:'#ff9a3e' },
+    { key:'E', label:'Extraversion',      borderColor:'#39b24a', pointBackgroundColor:'#39b24a' },
+    { key:'A', label:'Agreeableness',     borderColor:'#71c7ff', pointBackgroundColor:'#71c7ff' },
+    { key:'N', label:'Neuroticism',       borderColor:'#b15dff', pointBackgroundColor:'#b15dff' },
+  ].map(ds => ({
+    label: ds.label,
+    data: binCounts(teamMeans[ds.key]),
+    fill:false,
+    borderColor: ds.borderColor,
+    pointBackgroundColor: ds.pointBackgroundColor,
+    pointRadius: 3,
+    tension: 0.35,
+  }));
+
+  const ctx = document.getElementById('binsChart').getContext('2d');
+  if (chart) chart.destroy();
+  chart = new Chart(ctx, {
+    type: 'line',
+    data: { labels: BIN_LABELS, datasets: dataSets },
+    options: {
+      responsive: true,
+      scales: {
+        x: { title: { display:true, text:'Average trait score (0–100)' } },
+        y: { beginAtZero:true, title:{ display:true, text:'Number of teams per 10-point band' } }
+      },
+      plugins: {
+        legend: { position: 'bottom' },
+        tooltip: { mode: 'index', intersect: false }
+      }
+    }
+  });
+  document.getElementById('chartCard').style.display = 'block';
 }
 
 /* ---------- Wiring ---------- */
-const csvInput = document.getElementById("csvFile");
-const runBtn = document.getElementById("runBtn");
-const downloadBtn = document.getElementById("downloadBtn");
-const downloadSummaryBtn = document.getElementById("downloadSummaryBtn");
-const detected = document.getElementById("detected");
-const resultCard = document.getElementById("resultCard");
-const summaryDiv = document.getElementById("summary");
-const tableWrap = document.getElementById("tableWrap");
+const csvInput=document.getElementById("csvFile");
+const runBtn=document.getElementById("runBtn");
+const downloadBtn=document.getElementById("downloadBtn");
+const downloadSummaryBtn=document.getElementById("downloadSummaryBtn");
+const detected=document.getElementById("detected");
+const resultCard=document.getElementById("resultCard");
+const chartCard=document.getElementById("chartCard");
+const summaryDiv=document.getElementById("summary");
+const tableWrap=document.getElementById("tableWrap");
 
-let parsedRows = null, nameCol = null, traitCols = null, assignments = null;
+let parsedRows=null, nameCol=null, traitCols=null, assignments=null;
 
-csvInput.addEventListener("change", () => {
-  const file = csvInput.files?.[0];
-  if (!file) { runBtn.disabled = true; return; }
+csvInput.addEventListener("change", ()=>{
+  const file=csvInput.files?.[0]; if(!file){runBtn.disabled=true; return;}
   Papa.parse(file, {
-    header: true,
-    skipEmptyLines: "greedy",
-    complete: (res) => {
-      parsedRows = res.data.filter(r => Object.values(r).some(v => String(v ?? "").trim()!==""));
-      const headers = res.meta.fields || Object.keys(parsedRows[0] || {});
-      const det = detectColumns(headers);
-      if (!det.ok) { detected.textContent = det.error; runBtn.disabled = true; return; }
-      nameCol = det.nameCol; traitCols = det.traitCols;
-      detected.textContent = `Name: "${nameCol}" | Traits: O="${traitCols.O}", C="${traitCols.C}", E="${traitCols.E}", A="${traitCols.A}", N="${traitCols.N}"`;
-      runBtn.disabled = false;
+    header:true, skipEmptyLines:"greedy",
+    complete:(res)=>{
+      parsedRows=res.data.filter(r=>Object.values(r).some(v=>String(v??"").trim()!==""));
+      const headers=res.meta.fields||Object.keys(parsedRows[0]||{});
+      const det=detectColumns(headers);
+      if(!det.ok){detected.textContent=det.error; runBtn.disabled=true; return;}
+      nameCol=det.nameCol; traitCols=det.traitCols;
+      detected.textContent=`Name: "${nameCol}" | Traits: O="${traitCols.O}", C="${traitCols.C}", E="${traitCols.E}", A="${traitCols.A}", N="${traitCols.N}"`;
+      runBtn.disabled=false;
     },
-    error: (err) => { detected.textContent = "Parse error: " + err.message; runBtn.disabled = true; }
+    error:(err)=>{detected.textContent="Parse error: "+err.message; runBtn.disabled=true;}
   });
 });
 
-function meanArrIdx(team, arr){ return mean(team.map(i=>arr[i])); }
+runBtn.addEventListener("click", ()=>{
+  if(!parsedRows) return;
+  const wC=parseFloat(document.getElementById("wC").value||"1");
+  const wN=parseFloat(document.getElementById("wN").value||"1");
+  const iters=parseInt(document.getElementById("iters").value||"20000",10);
+  const seed=parseInt(document.getElementById("seed").value||"123",10);
 
-runBtn.addEventListener("click", () => {
-  if (!parsedRows) return;
-  const wC = parseFloat(document.getElementById("wC").value || "1");
-  const wN = parseFloat(document.getElementById("wN").value || "1");
-  const iters = parseInt(document.getElementById("iters").value || "20000", 10);
-  const seed = parseInt(document.getElementById("seed").value || "123", 10);
+  const rows=parsedRows.filter(r=> r[traitCols.C]!==undefined && r[traitCols.N]!==undefined &&
+    r[traitCols.C]!=="" && r[traitCols.N]!=="" && !isNaN(+r[traitCols.C]) && !isNaN(+r[traitCols.N]));
 
-  const rows = parsedRows.filter(r =>
-    r[traitCols.C] !== undefined && r[traitCols.N] !== undefined &&
-    r[traitCols.C] !== "" && r[traitCols.N] !== "" &&
-    !isNaN(Number(r[traitCols.C])) && !isNaN(Number(r[traitCols.N]))
-  );
+  const C=rows.map(r=>+r[traitCols.C]);
+  const N=rows.map(r=>+r[traitCols.N]);
+  const n=rows.length; if(n<5){alert("Not enough valid rows with C and N."); return;}
 
-  const C = rows.map(r => Number(r[traitCols.C]));
-  const N = rows.map(r => Number(r[traitCols.N]));
-  const n = rows.length;
-  if (n < 5) { alert("Not enough valid rows with C and N."); return; }
+  const sizes=targetTeamSizes(n);
+  const teams0=initialAssignment(n, sizes, C, seed);
+  assignments=optimise(teams0, C, N, wC, wN, iters, seed);
 
-  const sizes = targetTeamSizes(n);
-  const teams0 = initialAssignment(n, sizes, C, seed);
-  assignments = optimise(teams0, C, N, wC, wN, iters, seed);
+  const teamMeansC=assignments.map(t=>mean(t.map(i=>C[i])));
+  const stdTeamMeanC=sd(teamMeansC);
+  const avgTeamSdN=mean(assignments.map(t=>sdSample(t.map(i=>N[i]))));
 
-  const teamMeansC = assignments.map(t => mean(t.map(i => C[i])));
-  const stdTeamMeanC = sd(teamMeansC);
-  const avgTeamSdN = mean(assignments.map(t => sdSample(t.map(i => N[i]))));
-
-  summaryDiv.innerHTML = `
+  summaryDiv.innerHTML=`
     <span class="pill">Teams: ${assignments.map(t=>t.length).join(", ")}</span>
     <span class="pill">Std of team-mean C: ${stdTeamMeanC.toFixed(3)}</span>
     <span class="pill">Avg within-team SD of N: ${avgTeamSdN.toFixed(3)}</span>
   `;
 
-  // Keep for downloads
-  window._rows = rows; window._nameCol = nameCol; window._traitCols = traitCols; window._assignments = assignments;
+  // Save for downloads / chart
+  window._rows=rows; window._nameCol=nameCol; window._traitCols=traitCols; window._assignments=assignments;
 
-  tableWrap.innerHTML = renderTable(assignments, rows, nameCol, traitCols);
-  resultCard.style.display = "block";
-  downloadBtn.disabled = false;
-  downloadSummaryBtn.disabled = false;
+  tableWrap.innerHTML=renderTable(assignments, rows, nameCol, traitCols);
+  resultCard.style.display="block";
+  downloadBtn.disabled=false; downloadSummaryBtn.disabled=false;
+
+  // Draw the bins chart
+  renderBinsChart(assignments, rows, traitCols);
 });
 
-downloadBtn.addEventListener("click", () => {
-  if (!window._assignments) return;
+downloadBtn.addEventListener("click", ()=>{
+  if(!window._assignments) return;
   downloadCSV(window._assignments, window._rows, window._nameCol, window._traitCols);
 });
-
-downloadSummaryBtn.addEventListener("click", () => {
-  if (!window._assignments) return;
+downloadSummaryBtn.addEventListener("click", ()=>{
+  if(!window._assignments) return;
   downloadSummaryCSV(window._assignments, window._rows, window._traitCols);
 });
 </script>
